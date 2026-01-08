@@ -28,8 +28,6 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-// Defined similarly as https://pkg.go.dev/k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1#Healthy.
-type HealthStatus string
 
 const (
 	Healthy HealthStatus = "Healthy"

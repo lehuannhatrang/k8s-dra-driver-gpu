@@ -39,7 +39,7 @@ import (
 type DeviceName = string
 
 type AllocatableDevices map[DeviceName]*AllocatableDevice
-
+type HealthStatus string
 //type AllocatableDevices []AllocatableDevice
 
 // AllocatableDevice represents an individual device that can be allocated.
@@ -71,11 +71,13 @@ type AllocatableDevice struct {
 // MIG device, and how that's a fundamental data structure. Maybe define its own
 // type for it, and use it elsewhere.
 type MigInfo struct {
+	UUID          string `json:"uuid"`
 	Parent        *GpuInfo
 	Profile       nvdev.MigProfile
 	GIProfileInfo nvml.GpuInstanceProfileInfo
 	// TODO(JP): rename to Placement?
 	MemorySlices nvml.GpuInstancePlacement
+	Health        HealthStatus
 }
 
 func (i *MigInfo) CanonicalName() DeviceName {
@@ -296,8 +298,6 @@ func (d AllocatableDevice) UUID() string {
 
 type AllocatableDeviceList []*AllocatableDevice
 
-type AllocatableDevices map[string]*AllocatableDevice
-
 func (d AllocatableDevices) getDevicesByGPUPCIBusID(pcieBusID string) AllocatableDeviceList {
 	var devices AllocatableDeviceList
 	for _, device := range d {
@@ -307,7 +307,7 @@ func (d AllocatableDevices) getDevicesByGPUPCIBusID(pcieBusID string) Allocatabl
 				devices = append(devices, device)
 			}
 		case MigDeviceType:
-			if device.Mig.parent.pcieBusID == pcieBusID {
+			if device.Mig.Parent.pcieBusID == pcieBusID {
 				devices = append(devices, device)
 			}
 		case VfioDeviceType:
@@ -451,6 +451,17 @@ func memsliceCounterName(i int) string {
 // Helper for creating an integer-based DeviceCapacity. Accept any integer type.
 func intcap[T constraints.Integer](i T) resourceapi.DeviceCapacity {
 	return resourceapi.DeviceCapacity{Value: *resource.NewQuantity(int64(i), resource.BinarySI)}
+}
+
+func (d AllocatableDevices) MigDeviceUUIDs() []string {
+	var uuids []string
+	for _, device := range d {
+		if device.Type() == MigDeviceType {
+			uuids = append(uuids, device.Mig.UUID)
+		}
+	}
+	slices.Sort(uuids)
+	return uuids
 }
 
 func (d AllocatableDevices) UUIDs() []string {

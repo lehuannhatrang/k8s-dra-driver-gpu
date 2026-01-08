@@ -44,12 +44,12 @@ import (
 const (
 	cdiVendor = "k8s." + DriverName
 
-	//cdiDeviceClass = "device"
-	//cdiDeviceKind  = cdiVendor + "/" + cdiDeviceClass
+	cdiDeviceClass = "device"
+	cdiDeviceKind  = cdiVendor + "/" + cdiDeviceClass
 	cdiClaimClass = "claim"
-	//cdiClaimKind  = cdiVendor + "/" + cdiClaimClass
+	cdiClaimKind  = cdiVendor + "/" + cdiClaimClass
 
-	// cdiBaseSpecIdentifier = "base"
+	cdiBaseSpecIdentifier = "base"
 	cdiVfioSpecIdentifier = "vfio"
 
 	defaultCDIRoot = "/var/run/cdi"
@@ -60,7 +60,7 @@ type CDIHandler struct {
 	logger   *logrus.Logger
 	nvml     nvml.Interface
 	nvdevice nvdevice.Interface
-	//nvcdiDevice       nvcdi.Interface
+	nvcdiDevice       nvcdi.Interface
 	nvcdiClaim        nvcdi.Interface
 	cache             *cdiapi.Cache
 	driverRoot        string
@@ -104,23 +104,23 @@ func NewCDIHandler(opts ...cdiOption) (*CDIHandler, error) {
 	if h.claimClass == "" {
 		h.claimClass = cdiClaimClass
 	}
-	// if h.nvcdiDevice == nil {
-	// 	nvcdilib, err := nvcdi.New(
-	// 		nvcdi.WithDeviceLib(h.nvdevice),
-	// 		nvcdi.WithDriverRoot(h.driverRoot),
-	// 		nvcdi.WithDevRoot(h.devRoot),
-	// 		nvcdi.WithLogger(h.logger),
-	// 		nvcdi.WithNvmlLib(h.nvml),
-	// 		nvcdi.WithMode("nvml"),
-	// 		nvcdi.WithVendor(h.vendor),
-	// 		nvcdi.WithClass(h.deviceClass),
-	// 		nvcdi.WithNVIDIACDIHookPath(h.nvidiaCDIHookPath),
-	// 	)
-	// 	if err != nil {
-	// 		return nil, fmt.Errorf("unable to create CDI library for devices: %w", err)
-	// 	}
-	// 	h.nvcdiDevice = nvcdilib
-	// }
+	if h.nvcdiDevice == nil {
+		nvcdilib, err := nvcdi.New(
+			nvcdi.WithDeviceLib(h.nvdevice),
+			nvcdi.WithDriverRoot(h.driverRoot),
+			nvcdi.WithDevRoot(h.devRoot),
+			nvcdi.WithLogger(h.logger),
+			nvcdi.WithNvmlLib(h.nvml),
+			nvcdi.WithMode("nvml"),
+			nvcdi.WithVendor(h.vendor),
+			nvcdi.WithClass(h.deviceClass),
+			nvcdi.WithNVIDIACDIHookPath(h.nvidiaCDIHookPath),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("unable to create CDI library for devices: %w", err)
+		}
+		h.nvcdiDevice = nvcdilib
+	}
 	if h.nvcdiClaim == nil {
 		nvcdilib, err := nvcdi.New(
 			nvcdi.WithDeviceLib(h.nvdevice),
@@ -232,7 +232,78 @@ func (cdi *CDIHandler) createStandardNvidiaDeviceSpecFile(allocatable Allocatabl
 	if r := cdi.nvml.Init(); r != nvml.SUCCESS {
 		return fmt.Errorf("failed to initialize NVML: %v", r)
 	}
+	defer func() {
+		if r := cdi.nvml.Shutdown(); r != nvml.SUCCESS {
+			klog.Warningf("failed to shutdown NVML: %v", r)
+		}
+	}()
+
+	// Generate the set of common edits.
+	commonEdits, err := cdi.nvcdiDevice.GetCommonEdits()
+	if err != nil {
+		return fmt.Errorf("failed to get common CDI spec edits: %w", err)
+	}
+
+	// Make sure that NVIDIA_VISIBLE_DEVICES is set to void to avoid the
+	// nvidia-container-runtime honoring it in addition to the underlying
+	// runtime honoring CDI.
+	commonEdits.Env = append(
+		commonEdits.Env,
+		"NVIDIA_VISIBLE_DEVICES=void")
+
+	// Generate device specs for all full GPUs and MIG devices.
+	var deviceSpecs []cdispec.Device
+	for _, device := range allocatable {
+		if device.Type() == VfioDeviceType {
+			continue
+		}
+
+		uuid := device.UUID()
+		if device.Type() == MigDeviceType {
+			// Goal: inject parent dev node. Other dev nodes specific to this
+			// MIG device are injected 'manually' further below. That is because
+			// currently `nvcdiDevice.GetDeviceSpecsByID()` may yield an
+			// incomplete spec for MIG devices, see
+			// https://github.com/NVIDIA/k8s-dra-driver-gpu/issues/787. Instead,
+			// manually create the required dev node spec for the consuming
+			// container via GetDevNodesForMigDevice() below.
+			uuid = device.Mig.Parent.UUID
+		}
+
+		dspecs, err := cdi.nvcdiDevice.GetDeviceSpecsByID(uuid)
+		if err != nil {
+			return fmt.Errorf("unable to get device spec for %s: %w", device.CanonicalName(), err)
+		}
+		dspecs[0].Name = device.CanonicalName()
+
+		if device.Type() == MigDeviceType {
+			devnodesForMig, err := cdi.GetDevNodesForMigDevice(device.Mig.parent.minor, int(device.Mig.giInfo.Id), int(device.Mig.ciInfo.Id))
+			if err != nil {
+				return fmt.Errorf("failed to construct MIG device DeviceNode edits: %w", err)
+			}
+			klog.V(7).Infof("CDI spec: appending MIG device nodes")
+			dspecs[0].ContainerEdits.DeviceNodes = append(dspecs[0].ContainerEdits.DeviceNodes, devnodesForMig...)
+		}
+
+		deviceSpecs = append(deviceSpecs, dspecs[0])
+	}
+
+	// Generate base spec from commonEdits and deviceEdits.
+	spec, err := spec.New(
+		spec.WithVendor(cdiVendor),
+		spec.WithClass(cdiDeviceClass),
+		spec.WithDeviceSpecs(deviceSpecs),
+		spec.WithEdits(*commonEdits.ContainerEdits),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to creat CDI spec: %w", err)
+	}
+
+	specName := cdiapi.GenerateTransientSpecName(cdiVendor, cdiDeviceClass, cdiBaseSpecIdentifier)
+	klog.Infof("Writing spec for %s to %s", specName, cdi.cdiRoot)
+	return cdi.writeSpec(spec, specName)
 }
+
 // Construct and return the CDI `deviceNodes` specification for the two
 // character devices `/dev/nvidia-caps/nvidia-cap<CIm>` and
 // `/dev/nvidia-caps/nvidia-cap<GIm>` for a specific MIG device.
