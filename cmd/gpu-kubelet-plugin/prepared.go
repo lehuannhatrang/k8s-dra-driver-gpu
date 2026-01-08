@@ -37,8 +37,12 @@ type PreparedGpu struct {
 }
 
 type PreparedMigDevice struct {
-	Info   *MigDeviceInfo        `json:"info"`
-	Device *kubeletplugin.Device `json:"device"`
+	// Abstract, allocatable device
+	//Requested *MigInfo `json:"requested"`
+	RequestedCanonicalName DeviceName `json:"requestedCanonicalName"`
+	// Specifc, created device. Detail needed for deletion and book-keeping.
+	Created *MigDeviceInfo        `json:"created"`
+	Device  *kubeletplugin.Device `json:"device"`
 }
 
 type PreparedVfioDevice struct {
@@ -69,7 +73,8 @@ func (d *PreparedDevice) CanonicalName() string {
 	case GpuDeviceType:
 		return d.Gpu.Info.CanonicalName()
 	case MigDeviceType:
-		return d.Mig.Info.CanonicalName()
+		// return d.Mig.Info.CanonicalName()
+		return d.Mig.RequestedCanonicalName //.CanonicalName()
 	case VfioDeviceType:
 		return d.Vfio.Info.CanonicalName()
 	}
@@ -114,6 +119,14 @@ func (d PreparedDevices) GetDevices() []kubeletplugin.Device {
 	return devices
 }
 
+func (d PreparedDevices) GetDeviceNames() []DeviceName {
+	var names []DeviceName
+	for _, group := range d {
+		names = append(names, group.GetDeviceNames()...)
+	}
+	return names
+}
+
 func (g *PreparedDeviceGroup) GetDevices() []kubeletplugin.Device {
 	var devices []kubeletplugin.Device
 	for _, device := range g.Devices {
@@ -127,6 +140,19 @@ func (g *PreparedDeviceGroup) GetDevices() []kubeletplugin.Device {
 		}
 	}
 	return devices
+}
+
+func (g *PreparedDeviceGroup) GetDeviceNames() []DeviceName {
+	var names []DeviceName
+	for _, device := range g.Devices {
+		switch device.Type() {
+		case GpuDeviceType:
+			names = append(names, device.Gpu.Info.CanonicalName())
+		case MigDeviceType:
+			names = append(names, device.Mig.RequestedCanonicalName)
+		}
+	}
+	return names
 }
 
 func (l PreparedDeviceList) UUIDs() []string {
@@ -175,7 +201,7 @@ func (d PreparedDevices) GpuUUIDs() []string {
 func (l PreparedDeviceList) MigDeviceUUIDs() []string {
 	var uuids []string
 	for _, device := range l.MigDevices() {
-		uuids = append(uuids, device.Mig.Info.UUID)
+		uuids = append(uuids, device.Mig.Created.UUID)
 	}
 	slices.Sort(uuids)
 	return uuids

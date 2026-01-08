@@ -166,3 +166,40 @@ tests: runner-image
 		tests/bats/test_cd_failover.bats \
 		tests/bats/test_cd_updowngrade.bats \
 		tests/bats/test_gpu_stress.bats)
+#
+# tests/bats/test_gpu_basic.bats \
+#
+.PHONY: tests
+tests: image
+	export _RUNDIR_PARENT=/tmp/k8s-dra-driver-gpu-tests-out-$${USER} && \
+	mkdir -p "$${_RUNDIR_PARENT}" && \
+	export _RUNDIR=$$(mktemp -p $${_RUNDIR_PARENT} -d -t bats-tests-$$(date +%s)-XXXXX) && \
+	docker run \
+		--rm \
+		$(DOCKER_RUN_FLAGS) \
+		-v /tmp:/tmp \
+		-v $(CURDIR):/cwd \
+		-v $(HOME)/.kube/:$(HOME)/.kube \
+		--env KUBECONFIG=$(KUBECONFIG) \
+		--env TEST_CHART_REPO=$(TEST_CHART_REPO) \
+		--env TEST_CHART_VERSION=$(TEST_CHART_VERSION) \
+		--env TEST_CHART_LASTSTABLE_REPO=$(TEST_CHART_LASTSTABLE_REPO) \
+		--env TEST_CHART_LASTSTABLE_VERSION=$(TEST_CHART_LASTSTABLE_VERSION) \
+		--env TEST_CRD_UPGRADE_TARGET_GIT_REF=$(TEST_CRD_UPGRADE_TARGET_GIT_REF) \
+		--env TEST_NVIDIA_DRIVER_ROOT=$(TEST_NVIDIA_DRIVER_ROOT) \
+		--env TEST_EXPECTED_IMAGE_SPEC_SUBSTRING=$(TEST_EXPECTED_IMAGE_SPEC_SUBSTRING) \
+		-u $(shell id -u ${USER}):$(shell id -g ${USER}) \
+		--entrypoint "/bin/bash"\
+		$(BATS_IMAGE) \
+		-c "set -ex; cd /cwd; \
+			echo 'Running k8s cluster cleanup (invasive)... '; \
+			bash tests/bats/cleanup-from-previous-run.sh 2>&1 | tee -a $${_RUNDIR}/cleanup.outerr; \
+			set +x; echo '--- STARTING TEST SUITE ---'; set -x; \
+			TMPDIR=$${_RUNDIR} bats \
+			--print-output-on-failure \
+			--no-tempdir-cleanup \
+			--timing \
+			--abort \
+			tests/bats/test_gpu_dynmig.bats \
+		"
+

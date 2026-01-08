@@ -100,6 +100,16 @@ $ kubectl logs pod -n gpu-test2 --all-containers --prefix
 
 Contributions require a Developer Certificate of Origin (DCO, see [CONTRIBUTING.md](https://github.com/NVIDIA/k8s-dra-driver-gpu/blob/main/CONTRIBUTING.md)).
 
+### Building the container image
+
+
+
+```console
+make -f deployments/container/Makefile build
+```
+
+
+
 ## Support
 
 Please open an issue on the GitHub project for questions and for reporting problems.

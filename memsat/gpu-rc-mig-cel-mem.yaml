@@ -1,0 +1,20 @@
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: ${RCT_NAME}
+spec:
+  spec:
+    devices:
+      requests:
+      - name: ${REQ_NAME}
+        exactly:
+          deviceClassName: mig.nvidia.com
+          selectors:
+          - cel:
+              # # device.capacity['gpu.nvidia.com'].memory.isLessThan(quantity("${MEM_UPPER_BOUND_GIB}Gi"))
+              expression: |
+                device.capacity['gpu.nvidia.com'].memory.isGreaterThan(quantity("${MEM_LOWER_BOUND_GIB}Gi"))
+
+
+
+

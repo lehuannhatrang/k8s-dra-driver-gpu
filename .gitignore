@@ -1,3 +1,5 @@
+# Note: add to `~/.config/git/ignore` for personal, global
+# gitignore additions.
 .cache/
 .bash_history
 /compute-domain-controller
@@ -8,6 +10,18 @@
 coverage.out
 tests-out
 *.log
+*.log.*
 *.tar
 *.tgz
+*.tar.gz
+
+# Ignore shell scripts in the repository root;
+# they are typically ad-hoc.
+/*.sh
+
+# Also, go programs in the repo root are typically
+# ad-hoc
+/*.go
+
+.vscode
 

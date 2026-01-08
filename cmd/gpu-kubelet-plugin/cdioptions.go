@@ -19,6 +19,7 @@ package main
 import (
 	nvdevice "github.com/NVIDIA/go-nvlib/pkg/nvlib/device"
 	"github.com/NVIDIA/go-nvml/pkg/nvml"
+	"github.com/sirupsen/logrus"
 )
 
 // cdiOption represents a functional option for constructing a CDI handler.
@@ -77,5 +78,12 @@ func WithDeviceLib(nvdevice nvdevice.Interface) cdiOption {
 func WithVendor(vendor string) cdiOption {
 	return func(c *CDIHandler) {
 		c.vendor = vendor
+	}
+}
+
+// WithVendor provides an cdiOption to set the logger used by the 'cdi' interface.
+func WithLogger(logger *logrus.Logger) cdiOption {
+	return func(c *CDIHandler) {
+		c.logger = logger
 	}
 }

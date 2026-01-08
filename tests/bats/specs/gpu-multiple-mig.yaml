@@ -1,0 +1,55 @@
+# Scenario: 1 pod, two containers. Each container asking for a dedicated MIG
+# device
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: rct-migdevs
+spec:
+  spec:
+    devices:
+      requests:
+      - name: mig1g
+        exactly:
+          deviceClassName: mig.nvidia.com
+          selectors:
+          - cel:
+              expression: "device.attributes['gpu.nvidia.com'].profile == '1g.24gb'"
+      - name: mig3g
+        exactly:
+          deviceClassName: mig.nvidia.com
+          selectors:
+          - cel:
+              expression: "device.attributes['gpu.nvidia.com'].profile == '3g.95gb'"
+      # test elsewhere: spawned on the same parent GPU --
+      # constraints:
+      # - requests: []
+      #   matchAttribute: "gpu.nvidia.com/parentUUID"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-2mig
+  labels:
+    env: batssuite
+spec:
+  containers:
+  - name: ctr0
+    image: ubuntu:24.04
+    command: ["bash", "-c"]
+    args: ["nvidia-smi -L; trap 'exit 0' TERM; sleep 9999 & wait"]
+    resources:
+      claims:
+      - name: migdevs
+        request: mig1g
+  - name: ctr1
+    image: ubuntu:24.04
+    command: ["bash", "-c"]
+    args: ["nvidia-smi -L; trap 'exit 0' TERM; sleep 9999 & wait"]
+    resources:
+      claims:
+      - name: migdevs
+        request: mig3g
+  resourceClaims:
+  - name: migdevs
+    resourceClaimTemplateName: rct-migdevs
+

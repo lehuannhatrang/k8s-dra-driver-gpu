@@ -18,8 +18,11 @@ package dgpu
 
 import (
 	"errors"
+	"fmt"
+	"os"
 
 	"github.com/NVIDIA/go-nvlib/pkg/nvlib/device"
+	"github.com/davecgh/go-spew/spew"
 
 	"github.com/NVIDIA/nvidia-container-toolkit/internal/discover"
 	"github.com/NVIDIA/nvidia-container-toolkit/internal/logger"
@@ -71,8 +74,10 @@ func NewForMigDevice(d device.Device, mig device.MigDevice, opts ...Option) (dis
 	nvsandboxutilsDiscoverer, err := o.newNvsandboxutilsDGPUDiscoverer(mig)
 	if err != nil {
 		// TODO: Log a warning
+		fmt.Fprintf(os.Stderr, "TODO: Log a warning; newNvsandboxutilsDGPUDiscoverer() failed: %v\n", err)
 		errs = errors.Join(errs, err)
 	} else if nvsandboxutilsDiscoverer != nil {
+		fmt.Fprintf(os.Stderr, "nvsandboxutilsDiscoverer != nil\n")
 		discoverers = append(discoverers, nvsandboxutilsDiscoverer)
 	}
 
@@ -92,6 +97,9 @@ func NewForMigDevice(d device.Device, mig device.MigDevice, opts ...Option) (dis
 	if len(discoverers) == 0 {
 		return nil, errs
 	}
+
+	fmt.Fprintf(os.Stderr, "NewForMigDevice():\n")
+	spew.Printf("%s=%#v\n", "discoverers", discoverers)
 
 	return discover.WithCache(
 		discover.FirstValid(

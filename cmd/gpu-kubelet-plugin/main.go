@@ -55,6 +55,7 @@ type Flags struct {
 	kubeletPluginsDirectoryPath   string
 	healthcheckPort               int
 	additionalXidsToIgnore        string
+	klogVerbosity                 int
 }
 
 type Config struct {
@@ -174,6 +175,11 @@ func newApp() *cli.App {
 			}
 			// `loggingConfig` must be applied before doing any logging
 			err := loggingConfig.Apply()
+
+			// Store klog's log verbosity setting in this program's config for
+			// later runtime inspection (it's otherwise not accessible anymore
+			// because do not expose the raw `cliFlags`.
+			flags.klogVerbosity = int(loggingConfig.Config.Verbosity)
 			pkgflags.LogStartupConfig(flags, loggingConfig)
 			return err
 		},

@@ -70,7 +70,7 @@ func NewFlock(path string) *Flock {
 func (l *Flock) Acquire(ctx context.Context, opts ...AcquireOption) (func(), error) {
 	cfg := &acquireConfig{
 		// Default: short period to keep lock acquisition rather responsive
-		pollPeriod: 200 * time.Millisecond,
+		pollPeriod: 100 * time.Millisecond,
 		// Default: timeout disabled
 		timeout: 0,
 	}

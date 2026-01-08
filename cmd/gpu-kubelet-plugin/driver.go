@@ -19,8 +19,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"sync"
+	"slices"
 	"time"
 
 	resourceapi "k8s.io/api/resource/v1"
@@ -62,6 +64,10 @@ func NewDriver(ctx context.Context, config *Config) (*driver, error) {
 		return nil, err
 	}
 
+	// Could be done in NewDeviceState, but I want to make sure that the
+	// checkpoint logic is intact -- that's most obvious here.
+	state.DestroyUnknownMIGDevices(ctx)
+
 	puLockPath := filepath.Join(config.DriverPluginPath(), DriverPrepUprepFlockFileName)
 
 	driver := &driver{
@@ -85,7 +91,9 @@ func NewDriver(ctx context.Context, config *Config) (*driver, error) {
 	}
 	driver.pluginhelper = helper
 
-	healthcheck, err := startHealthcheck(ctx, config)
+	resources := driver.GenerateDriverResources(config.flags.nodeName)
+
+	healthcheck, err := startHealthcheck(ctx, config, helper)
 	if err != nil {
 		return nil, fmt.Errorf("start healthcheck: %w", err)
 	}
@@ -111,8 +119,83 @@ func NewDriver(ctx context.Context, config *Config) (*driver, error) {
 	if err := driver.publishResources(ctx, config); err != nil {
 		return nil, err
 	}
+	
+	klog.V(4).Infof("Current kubelet plugin registration status: %s", helper.RegistrationStatus())
 
 	return driver, nil
+}
+
+// GenerateDriverResources() returns the set of DRA ResourceSlices announced by
+// this DRA driver to the system.
+func (d *driver) GenerateDriverResources(nodeName string) resourceslice.DriverResources {
+	// Note(JP): I first considered model 1, and then implemented model model 2.
+	//
+	// Model 1) Create G+1 resource slices, given G physical GPUs. 1) one slice
+	// with shared counters, for each full GPU 2) for each full GPU, a slice
+	// with the full-GPU-device and all potential MIG profile/placement devices.
+	// That model is inspired by KEP 4815 which talks about "require that
+	// ResourceSlice objects can only contain either SharedCounters or Devices".
+	// In practice, that does not seem to be a requirement (yet?); in fact, it
+	// doesn't seem to work to consume from a shared counter _not_ specified in
+	// the same ResourceSlice. Which brings me to model 2.
+	//
+	// Model 2) Create G resource slices, given G physical GPUs. Each slice
+	// describes the abstract full device capacity by definining _one_ counter
+	// set as part of `SharedCounters` (there could be 8 counter sets in total,
+	// but try to get away using one). Then, in the same resource slice define
+	// all devices allocatable for that physical GPU. That is, M possible MIG
+	// devices, and 1 device representing the full GPU. Hence:
+	//
+	// - G resource slices
+	// - Each resource slice:
+	//       - Defines `SharedCounters` with 1 counter set
+	//       - Defines M+1 devices
+	//
+	//
+	//
+	// Specific quote from KEP 4815 does does not make sense to be right now:
+	// "The decision to require that ResourceSlice objects can only contain
+	// either SharedCounters or Devices was made to prevent having to enforce
+	// overly strict validation to make sure that ResourceSlice objects can't
+	// exceed the etcd limit."
+
+	var gpuslices []resourceslice.Slice
+
+	// Iterate through map in predictable order, so that the slices get
+	// published in predictable order.
+	for _, minor := range slices.Sorted(maps.Keys(d.state.perGPUAllocatable)) {
+		allocatable := d.state.perGPUAllocatable[minor]
+		var slice resourceslice.Slice
+		countersets := []resourceapi.CounterSet{}
+
+		// Stable sort order by devicename -- makes the order of devices
+		// presented in a resource slice predictable. Good for debuggability /
+		// readability, and leads to a minimal slice diff during kubelet plugin
+		// restart (the slice diff is logged).
+		for _, devname := range slices.Sorted(maps.Keys(allocatable)) {
+			device := allocatable[devname]
+			klog.V(4).Infof("About to announce device %s", devname)
+
+			// Full GPU: take note of countersets, indicating absolute capacity.
+			// For now this is expected to be one counter set.
+			if device.Gpu != nil {
+				countersets = append(countersets, device.Gpu.PartSharedCounterSets()...)
+			}
+
+			// Add all allocatable devices for this physical GPU to this slice.
+			// This includes not-yet-manifested MIG devices, and the physical
+			// GPU itself.
+			slice.Devices = append(slice.Devices, device.PartGetDevice())
+		}
+		slice.SharedCounters = countersets
+		gpuslices = append(gpuslices, slice)
+	}
+
+	return resourceslice.DriverResources{
+		Pools: map[string]resourceslice.Pool{
+			nodeName: {Slices: gpuslices},
+		},
+	}
 }
 
 func (d *driver) Shutdown() error {
@@ -129,13 +212,23 @@ func (d *driver) Shutdown() error {
 	}
 
 	d.wg.Wait()
+	d.state.nvdevlib.alwaysShutdown()
 
 	d.pluginhelper.Stop()
 	return nil
 }
 
 func (d *driver) PrepareResourceClaims(ctx context.Context, claims []*resourceapi.ResourceClaim) (map[types.UID]kubeletplugin.PrepareResult, error) {
-	klog.V(6).Infof("PrepareResourceClaims called with %d claim(s)", len(claims))
+
+	if len(claims) == 0 {
+		// That's probably the health check, log that on higher verbosity level
+		klog.V(7).Infof("PrepareResourceClaims called with %d claim(s)", len(claims))
+	} else {
+		// Log canonical string representation for each claim injected here --
+		// we've noticed that this can greatly facilitate debugging.
+		klog.V(6).Infof("Prepare called for: %v", ClaimsToStrings(claims))
+	}
+
 	results := make(map[types.UID]kubeletplugin.PrepareResult)
 
 	for _, claim := range claims {
@@ -146,10 +239,8 @@ func (d *driver) PrepareResourceClaims(ctx context.Context, claims []*resourceap
 }
 
 func (d *driver) UnprepareResourceClaims(ctx context.Context, claimRefs []kubeletplugin.NamespacedObject) (map[types.UID]error, error) {
-	klog.V(6).Infof("UnprepareResourceClaims called with %d claim(s)", len(claimRefs))
-
+	klog.V(6).Infof("Unprepare called for: %v", ClaimRefsToStrings(claimRefs))
 	results := make(map[types.UID]error)
-
 	for _, claimRef := range claimRefs {
 		results[claimRef.UID] = d.nodeUnprepareResource(ctx, claimRef)
 	}
@@ -164,19 +255,26 @@ func (d *driver) HandleError(ctx context.Context, err error, msg string) {
 }
 
 func (d *driver) nodePrepareResource(ctx context.Context, claim *resourceapi.ResourceClaim) kubeletplugin.PrepareResult {
-	release, err := d.pulock.Acquire(ctx, flock.WithTimeout(10*time.Second))
-	if err != nil {
-		return kubeletplugin.PrepareResult{
-			Err: fmt.Errorf("error acquiring prep/unprep lock: %w", err),
-		}
-	}
-	defer release()
+	cs := ResourceClaimToString(claim)
+	// queue things a little longer than 10 seconds.
+	t0 := time.Now()
+	// release, err := d.pulock.Acquire(ctx, flock.WithTimeout(300*time.Second))
+	// if err != nil {
+	// 	return kubeletplugin.PrepareResult{
+	// 		Err: fmt.Errorf("error acquiring prep/unprep lock: %w", err),
+	// 	}
+	// }
+	// defer release()
+	klog.V(6).Infof("t_prep_lock_acq %.3f s", time.Since(t0).Seconds())
 
+	tprep0 := time.Now()
 	devs, err := d.state.Prepare(ctx, claim)
+	klog.V(6).Infof("t_prep %.3f s (claim %s)", time.Since(tprep0).Seconds(), cs)
+	klog.V(6).Infof("t_prep_total %.3f s (claim %s)", time.Since(t0).Seconds(), cs)
 
 	if err != nil {
 		return kubeletplugin.PrepareResult{
-			Err: fmt.Errorf("error preparing devices for claim %v: %w", claim.UID, err),
+			Err: fmt.Errorf("error preparing devices for claim %s: %w", cs, err),
 		}
 	}
 
@@ -193,15 +291,23 @@ func (d *driver) nodePrepareResource(ctx context.Context, claim *resourceapi.Res
 	return kubeletplugin.PrepareResult{Devices: devs}
 }
 
-func (d *driver) nodeUnprepareResource(ctx context.Context, claimNs kubeletplugin.NamespacedObject) error {
-	release, err := d.pulock.Acquire(ctx, flock.WithTimeout(10*time.Second))
+func (d *driver) nodeUnprepareResource(ctx context.Context, claimRef kubeletplugin.NamespacedObject) error {
+	cs := claimRef.String()
+	t0 := time.Now()
+	release, err := d.pulock.Acquire(ctx, flock.WithTimeout(300*time.Second))
 	if err != nil {
 		return fmt.Errorf("error acquiring prep/unprep lock: %w", err)
 	}
 	defer release()
+	klog.V(6).Infof("t_unprep_lock_acq %.3f s", time.Since(t0).Seconds())
 
-	if err := d.state.Unprepare(ctx, string(claimNs.UID)); err != nil {
-		return fmt.Errorf("error unpreparing devices for claim %v: %w", claimNs.UID, err)
+	tunprep0 := time.Now()
+	err = d.state.Unprepare(ctx, claimRef)
+	klog.V(6).Infof("t_unprep %.3f s (claim %s)", time.Since(tunprep0).Seconds(), cs)
+	klog.V(6).Infof("t_unprep_total %.3f s (claim %s)", time.Since(t0).Seconds(), cs)
+
+	if err != nil {
+		return fmt.Errorf("error unpreparing devices for claim %v: %w", claimRef.String(), err)
 	}
 
 	if featuregates.Enabled(featuregates.PassthroughSupport) {

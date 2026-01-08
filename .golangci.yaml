@@ -4,12 +4,17 @@ run:
 linters:
   enable:
     - asciicheck
+    - errcheck
+    - govet
+    - unused
     - contextcheck
     - forcetypeassert
     - gocritic
     - godot
     - misspell
     - staticcheck
+    - revive
+    - exhaustruct
   exclusions:
     generated: lax
     presets:

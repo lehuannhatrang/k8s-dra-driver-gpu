@@ -29,13 +29,13 @@ import (
 )
 
 type LoggingConfig struct {
-	config *logsapi.LoggingConfiguration
+	Config *logsapi.LoggingConfiguration
 }
 
 // NewLoggingConfig creates a new logging configuration.
 func NewLoggingConfig() *LoggingConfig {
 	return &LoggingConfig{
-		config: logsapi.NewLoggingConfiguration(),
+		Config: logsapi.NewLoggingConfiguration(),
 	}
 }
 
@@ -51,7 +51,7 @@ func (l *LoggingConfig) Flags() []cli.Flag {
 	var fs pflag.FlagSet
 
 	// This also registers klog configuration flags (such as -v).
-	logsapi.AddFlags(l.config, &fs)
+	logsapi.AddFlags(l.Config, &fs)
 
 	// Note: We do NOT add the feature-gates flag here anymore.
 	// That's handled by FeatureGateConfig to maintain proper separation of concerns.

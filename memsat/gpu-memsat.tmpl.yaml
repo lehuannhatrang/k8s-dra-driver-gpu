@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${POD_NAME}
+  labels:
+    env: batssuite
+    app: jp-mig-gen
+spec:
+  restartPolicy: OnFailure
+  containers:
+  - name: ctr0
+    # A Python image with cuda libraries and cupy
+    image: docker.io/jgehrcke/nickelpie #:v25.9.12-1
+    command: ["/bin/bash", "-c"]
+    args:
+      - |
+        export PYTHONUNBUFFERED=true
+        python3 -c '
+        GiB=${MEM_GPU_REQUIRED_GIB}
+        import cupy
+        import time
+        import math
+        size = int(math.sqrt(GiB/40.0*(1024**3/4.0)))
+        t0 = time.monotonic()
+        matrices = [cupy.random.rand(size, size, dtype=cupy.float32) for _ in range(15)]
+        for _ in range(16):
+            time.sleep(0.4)
+            tr0 = time.monotonic()
+            print(f"rnd_duration: {time.monotonic() - tr0:7.3f} s")
+            ti0 = time.monotonic()
+            y = cupy.linalg.inv(cupy.random.rand(size, size, dtype=cupy.float32))
+            time.sleep(0.4)
+            print(f"inv_duration: {time.monotonic() - ti0:7.3f} s")
+            for _ in range(2):
+                small = cupy.random.rand(100, 100, dtype=cupy.float32)
+                tsvd0 = time.monotonic()
+                z = cupy.linalg.inv(small)
+                y = cupy.linalg.svd(z)
+                time.sleep(0.4)
+                print(f"svd_duration: {time.monotonic() - tsvd0:7.3f} s")
+        dur = time.monotonic() - t0
+        dur_per_gib = dur/(size*size*8.0/1024**3)
+        print(f"done, total_duration: {dur:7.3f} s  dur_per_gib: {dur_per_gib:6.3f}")
+        '
+        echo "quit"
+    resources:
+      claims:
+      - name: gpu
+  resourceClaims:
+  - name: gpu
+    resourceClaimTemplateName: ${RCT_NAME}

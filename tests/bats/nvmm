@@ -1,0 +1,111 @@
+#!/bin/bash
+set -o errexit
+
+# Run cmd in nvidia-mig-manager pod because that one has highest privileges. I
+# use this for example to run `nvcnt gb-nvl-027-compute06 nvidia-smi`
+
+if [ -z "$1" ]; then
+	echo "Usage: nvmm <node-hint> [command...]"
+	exit 1
+fi
+set -o nounset
+
+WORKDIR_PATH="${TMPDIR:-/tmp}/migutils-${USER}"
+mkdir -p "${WORKDIR_PATH}"
+cd "${WORKDIR_PATH}"
+
+NODES_FILE_NAME="nodesnames"
+NODES_WIDE_FILE_NAME="nodes_wide"
+
+
+maybe_refresh_node_cache() {
+	local cachefn
+	cachefn="${NODES_FILE_NAME}"
+	if [ ! -f "$cachefn" ] || ! find "$cachefn" -type f -newermt '-120 seconds' -printf . -quit | grep -q .; then
+		#echo "refreshing nodes" >&2
+		kubectl get nodes -o jsonpath='{.items[*].metadata.name}' > "$NODES_FILE_NAME"
+		kubectl get nodes -o wide > "$NODES_WIDE_FILE_NAME"
+	else
+		# echo "nodes cache fresh" >&2
+		echo -n ""
+	fi
+}
+
+
+mm_pod_for_nname() {
+	local nodename
+	local cachefn
+	nodename="$1"
+	cachefn="_mmpod_for_${nodename}"
+
+	if [ ! -f "$cachefn" ] || ! find "$cachefn" -type f -newermt '-120 seconds' -printf . -quit | grep -q .; then
+		#echo "refreshing mmpod for $nodename" >&2
+		kubectl get pod -n gpu-operator -l app=nvidia-mig-manager \
+			--field-selector spec.nodeName="$nodename" \
+			--no-headers -o custom-columns=":metadata.name" > "$cachefn"
+		if [ -z "$(cat $cachefn)" ]; then
+			echo "get pod -n gpu-operator -l app=nvidia-mig-manager: no pod found on node $nodename"
+			exit 1
+		fi
+	else
+		#echo "mm_pod_for_nname fresh for $nodename" >&2
+		echo -n ""
+	fi
+
+	cat "$cachefn"
+}
+
+
+run_on_node() {
+	local nn
+	nn=$1
+	shift
+	pod=$(mm_pod_for_nname "$nn")
+	#echo "Executing on pod $pod ..." >&2
+	#kubectl -n gpu-operator exec -it "$pod" -c nvidia-mig-manager -- "$@"
+	kubectl -n gpu-operator exec "$pod" -c nvidia-mig-manager -- "$@"
+}
+
+
+nodehint="$1"
+shift  # Remove first argument, leaving remaining args in $@
+maybe_refresh_node_cache
+
+
+if [[ "$nodehint" != "all" ]]; then
+
+	# For manual usage, allow for identifying node based on any column in the wide
+	# output.
+	nn=$(cat "${NODES_WIDE_FILE_NAME}" | grep "$nodehint" | awk '{print $1}')
+	echo "using node name: $nn"
+	run_on_node "$nn" "$@"
+
+else
+
+	rnd=$(tr -dc a-z0-9 < /dev/urandom | head -c 7)
+	outdir="${WORKDIR_PATH}/output_${rnd}"
+	mkdir -p "$outdir"
+	trap 'rm -rf -- "$outdir"' EXIT
+
+	# Collect output, in parallel
+	# echo "run on all nodes in parallel ... " >&2
+  for nn in $(cat "${NODES_FILE_NAME}"); do
+		outfile="$(mktemp -p "${outdir}" "output-$nn.XXXXXX")" || { printf 'mktemp failed\n' >&2; exit 1; }
+		echo "-- ${nn:11}" > "$outfile"
+		#echo "" > "$outfile"
+		# run in background, collect all output to file
+		run_on_node "$nn" "$@" >> "$outfile" 2>&1 &
+  done
+	wait
+	#echo "done" >&2
+
+	find "$outdir" -maxdepth 1 -type f -print0 | sort -z | \
+	while IFS= read -r -d '' f; do
+		#echo "$f"
+    cat "$f"
+  done
+fi
+
+
+
+

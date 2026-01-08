@@ -18,6 +18,7 @@ package dgpu
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -60,6 +61,7 @@ func (o *options) newNvsandboxutilsDGPUDiscoverer(d UUIDer) (discover.Discover, 
 		hookCreator: o.hookCreator,
 	}
 
+	fmt.Fprintf(os.Stderr, "newNvsandboxutilsDGPUDiscoverer() returns successfuly\n")
 	return &nvd, nil
 }
 

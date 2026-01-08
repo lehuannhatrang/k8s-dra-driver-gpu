@@ -57,6 +57,7 @@ type Flags struct {
 	podName                string
 	podNamespace           string
 	maxNodesPerIMEXDomain  int
+	klogVerbosity          int
 }
 
 type IMEXConfigTemplateData struct {
@@ -162,6 +163,11 @@ func newApp() *cli.App {
 		Before: func(c *cli.Context) error {
 			// `loggingConfig` must be applied before doing any logging
 			err := loggingConfig.Apply()
+
+			// Store klog's log verbosity setting in this program's config for
+			// later runtime inspection (it's otherwise not accessible anymore
+			// because do not expose the raw `cliFlags`.
+			flags.klogVerbosity = int(loggingConfig.Config.Verbosity)
 			pkgflags.LogStartupConfig(flags, loggingConfig)
 			return err
 		},

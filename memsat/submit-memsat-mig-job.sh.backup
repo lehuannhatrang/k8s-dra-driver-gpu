@@ -1,0 +1,64 @@
+#!/bin/bash
+set -o nounset
+set -o errexit
+
+RNDSFX=$(tr -dc a-z0-9 < /dev/urandom | head -c 7)
+FULLGPU="no"
+CASE="$(python3 -c 'import random,sys; print(random.randrange(11))')"
+
+if   (( CASE == 0 )); then
+    export MIG_PROFILE_NAME="1g.24gb"
+elif (( CASE == 1 )); then
+    # This profile is just 'slow' :-)
+    #export MIG_PROFILE_NAME="1g.47gb"
+    export MIG_PROFILE_NAME="1g.24gb"
+elif (( CASE == 2 )); then
+    export MIG_PROFILE_NAME="2g.47gb"
+elif (( CASE == 3 )); then
+    export MIG_PROFILE_NAME="3g.95gb"
+elif (( CASE == 4 )); then
+    export MIG_PROFILE_NAME="4g.95gb"
+elif (( CASE == 5 )); then
+    export MIG_PROFILE_NAME="7g.189gb"
+
+# --- more interesting distribution, put more weight on those smaller jobs.
+elif (( CASE == 6 )); then
+    export MIG_PROFILE_NAME="1g.24gb"
+elif (( CASE == 7 )); then
+    export MIG_PROFILE_NAME="2g.47gb"
+elif (( CASE == 8 )); then
+    # available on the snowflake dev board
+    # on compute-07
+    export MIG_PROFILE_NAME="2g.48gb"
+elif (( CASE == 9 )); then
+    export MIG_PROFILE_NAME="3g.95gb"
+
+# --- special case of full-GPU job
+elif (( CASE == 10 )); then
+    export MIG_PROFILE_NAME="full-gpu.189gb"
+    export FULLGPU="yes"
+fi
+
+# extract digits after dot
+export MEM_CAPACITY_GB="$(echo ${MIG_PROFILE_NAME} | grep -oP '(?<=.)[0-9]+')"
+
+# remove dot.
+export MIG_PROFILE_NAME_SHORT="${MIG_PROFILE_NAME//./}"
+export REQ_NAME="mig-${MIG_PROFILE_NAME_SHORT}"
+export POD_NAME="pod-memsat-${MIG_PROFILE_NAME_SHORT}-${RNDSFX}"
+export RCT_NAME="rct-${MIG_PROFILE_NAME_SHORT}" #  no need to be random, can be re-used! -${RNDSFX}"
+
+if [[ $FULLGPU != "yes" ]] ; then
+    echo "render mig gpu rct template"
+   envsubst < gpu-rc-mig.tmpl.yaml | kubectl apply -f -
+else
+   export RCT_NAME="rct-full-gpu"
+   export REQ_NAME="full-gpu"
+   echo "render full gpu rct template"
+   envsubst < gpu-rc-full.tmpl.yaml | kubectl apply -f -
+fi
+
+env | grep -e "MIG_" -e MEM_CAP -e RNDSFX -e REQ_NAME -e RCT_NAME -e POD_NAME | sort
+
+# Workload template, without RCT
+envsubst < gpu-memsat.tmpl.yaml | kubectl apply -f -

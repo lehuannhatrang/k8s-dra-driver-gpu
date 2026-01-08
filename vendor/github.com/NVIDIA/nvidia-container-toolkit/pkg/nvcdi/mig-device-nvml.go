@@ -18,9 +18,11 @@ package nvcdi
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/NVIDIA/go-nvlib/pkg/nvlib/device"
 	"github.com/NVIDIA/go-nvml/pkg/nvml"
+	"github.com/davecgh/go-spew/spew"
 	"tags.cncf.io/container-device-interface/pkg/cdi"
 	"tags.cncf.io/container-device-interface/specs-go"
 
@@ -41,6 +43,8 @@ func (l *migDeviceSpecGenerator) GetUUID() (string, error) {
 }
 
 func (l *nvmllib) newMIGDeviceSpecGeneratorFromDevice(i int, d device.Device, j int, m device.MigDevice) (*migDeviceSpecGenerator, error) {
+	fmt.Fprintf(os.Stderr, "newMIGDeviceSpecGeneratorFromDevice()\n")
+
 	parent, err := l.newFullGPUDeviceSpecGeneratorFromDevice(i, d, make(map[FeatureFlag]bool))
 	if err != nil {
 		return nil, err
@@ -50,6 +54,8 @@ func (l *nvmllib) newMIGDeviceSpecGeneratorFromDevice(i int, d device.Device, j 
 	if ret != nvml.SUCCESS {
 		return nil, fmt.Errorf("failed to get MIG UUID: %v", ret)
 	}
+
+	fmt.Fprintf(os.Stderr, "newMIGDeviceSpecGeneratorFromDevice() migIndex: %v, migUUID:%v\n", j, migUUID)
 
 	e := &migDeviceSpecGenerator{
 		fullGPUDeviceSpecGenerator: parent,
@@ -61,6 +67,7 @@ func (l *nvmllib) newMIGDeviceSpecGeneratorFromDevice(i int, d device.Device, j 
 }
 
 func (l *nvmllib) newMIGDeviceSpecGeneratorFromNVMLDevice(uuid string, nvmlMIGDevice nvml.Device) (DeviceSpecGenerator, error) {
+	fmt.Fprintf(os.Stderr, "newMIGDeviceSpecGeneratorFromNVMLDevice()\n")
 	migDevice, err := l.devicelib.NewMigDevice(nvmlMIGDevice)
 	if err != nil {
 		return nil, err
@@ -134,10 +141,16 @@ func (l *migDeviceSpecGenerator) getDeviceEdits() (*cdi.ContainerEdits, error) {
 		return nil, fmt.Errorf("failed to create device discoverer: %v", err)
 	}
 
+	fmt.Fprintf(os.Stderr, "deviceNodes, err := dgpu.NewForMigDevice()\n")
+	spew.Printf("%s=%#v\n", "deviceNodes", deviceNodes)
+
 	editsForDevice, err := edits.FromDiscoverer(deviceNodes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create container edits for Compute Instance: %v", err)
 	}
+
+	fmt.Fprintf(os.Stderr, "editsForDevice, err := edits.FromDiscoverer(deviceNodes)\n")
+	spew.Printf("%s=%#v\n", "editsForDevice", deviceNodes)
 
 	return editsForDevice, nil
 }

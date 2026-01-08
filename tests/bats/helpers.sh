@@ -148,7 +148,7 @@ show_kubelet_plugin_error_logs() {
     -l nvidia-dra-driver-gpu-component=kubelet-plugin \
     -n nvidia-dra-driver-gpu \
     --all-containers \
-    --prefix --tail=-1 | grep -E "^(E|W)[0-9]{4}" -iE "error"
+    --prefix --tail=-1 | grep -E -e "^(E|W)[0-9]{4}" -e "error"
   ) || true
   echo -e "KUBELET PLUGIN ERROR LOGS END\n\n"
 }
@@ -198,6 +198,34 @@ mig_confirm_disabled_on_all_nodes() {
   # Confirm that MIG mode is disabled for all GPUs; in all nodes.
   run nvmm all sh -c 'nvidia-smi --query-gpu=index,mig.mode.current --format=csv'
   refute_output --partial "Enabled"
+}
+
+# Run cmd in nvidia-mig-manager pod because that one has highest privileges. I
+# use this for example to run `nvcnt gb-nvl-027-compute06 nvidia-smi`
+nvmm() {
+  if [ -z "$1" ]; then
+    echo "Usage: nvmm <node-hint> [command...]"
+    return 1
+  fi
+  local nodehint="$1"
+  shift  # Remove first argument, leaving remaining args in $@
+
+  local node=$(kubectl get nodes | grep "$nodehint" | awk '{print $1}')
+  #echo "identified node: $node"
+
+  local pod
+  pod=$(kubectl get pod -n gpu-operator -l app=nvidia-mig-manager \
+    --field-selector spec.nodeName="$node" \
+    --no-headers -o custom-columns=":metadata.name")
+
+  if [ -z "$pod" ]; then
+    echo "get pod -n gpu-operator -l app=nvidia-mig-manager: no pod found on node $node"
+    return 1
+  fi
+
+  echo -e "\nNODE $node"
+  #echo "Executing on pod $pod (node: $node)..."
+  kubectl -n gpu-operator exec -it "$pod" -c nvidia-mig-manager -- "$@"
 }
 
 
@@ -286,4 +314,29 @@ log() {
   _DUR=$(echo "$_TNOW - $_T0" | bc)
   _log_ts_no_newline
   printf "[%6.1fs] $1\n" "$_DUR"
+}
+show_all_mig_devices_all_nodes() {
+  for node in $(kubectl get nodes -o=jsonpath='{.items[*].metadata.name}'); do
+    nvmm "$node" nvidia-smi -L
+    #mig -lgi
+  done
+}
+
+show_processes_on_migs_all_nodes() {
+  for node in $(kubectl get nodes -o=jsonpath='{.items[*].metadata.name}'); do
+    nvmm "$node" sh -c 'nvidia-smi mig -lgi | grep MIG; nvidia-smi | grep -A10 Processes | grep -E '[0-9]+''
+  done
+}
+
+show_mig_mode_all_gpus_all_nodes() {
+  for node in $(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
+     nvmm "$node" sh -c 'nvidia-smi --query-gpu=index,mig.mode.current --format=csv'
+  done
+}
+
+
+show_utilization_all_gpus_all_nodes() {
+  for node in $(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
+     nvmm "$node" nvidia-smi --query-gpu=memory.used,temperature.gpu --format=csv
+  done
 }

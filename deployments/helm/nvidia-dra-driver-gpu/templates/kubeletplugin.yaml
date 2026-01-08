@@ -221,7 +221,7 @@ spec:
             port: {{ .Values.kubeletPlugin.containers.gpus.healthcheckPort }}
             service: liveness
           failureThreshold: 3
-          periodSeconds: 10
+          periodSeconds: 30
           timeoutSeconds: 10
         {{- end }}
         env:

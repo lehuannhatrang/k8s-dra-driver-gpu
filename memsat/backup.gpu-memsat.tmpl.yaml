@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${POD_NAME}
+  labels:
+    env: batssuite
+    app: jp-mig-gen
+spec:
+  restartPolicy: OnFailure
+  containers:
+  - name: ctr0
+    # A Python image with cuda libraries and cupy
+    image: docker.io/jgehrcke/nickelpie #:v25.9.12-1
+    command: ["/bin/bash", "-c"]
+    args:
+      - |
+        nvidia-smi -L
+        # x=cupy.random.rand(int(GiB*(1024**3/8.0)),1); \
+        while : ; do
+          echo "$(date --iso-8601=seconds) -- nvidia-smi: $(nvidia-smi | grep python3 | grep -oE '[0-9]*MiB')"
+          sleep 7
+        done &
+        export PYTHONUNBUFFERED=true
+        export CUPY_ACCELERATORS="cutensor"
+        python3 -c '
+        GiB=${MEM_GPU_REQUIRED_GIB}
+        import cupy
+        import time
+        import math
+        size = int(math.sqrt(GiB/5.5*(1024**3/4.0)))
+        size_small = int(math.sqrt(0.1*(1024**3/4.0)))
+        t0 = time.monotonic()
+        for _ in range(3):
+            tr0 = time.monotonic()
+            x = cupy.random.rand(size, size, dtype=cupy.float32)
+            print(f"rnd_duration: {time.monotonic() - tr0:7.3f} s")
+            ti0 = time.monotonic()
+            y = cupy.linalg.inv(x)
+            print(f"inv_duration: {time.monotonic() - ti0:7.3f} s")
+            tsvd0 = time.monotonic()
+            small = cupy.random.rand(2000, 2000, dtype=cupy.float32)
+            y = cupy.linalg.svd(small)
+            print(f"svd_duration: {time.monotonic() - tsvd0:7.3f} s")
+            #ts0 = time.monotonic()
+            #print(f"sum: {x.sum()}")
+            #print(f"sum_duration: {time.monotonic() - ts0:7.3f} s")
+        dur = time.monotonic() - t0
+        dur_per_gib = dur/(size*size*8.0/1024**3)
+        print(f"done, duration: {dur:7.3f} s dur_per_gib: {dur_per_gib:6.3f}")
+        '
+        echo "quit"
+    resources:
+      claims:
+      - name: gpu
+  resourceClaims:
+  - name: gpu
+    resourceClaimTemplateName: ${RCT_NAME}
