@@ -233,13 +233,13 @@ func (d *driver) nodePrepareResource(ctx context.Context, claim *resourceapi.Res
 	cs := ResourceClaimToString(claim)
 	// queue things a little longer than 10 seconds.
 	t0 := time.Now()
-	// release, err := d.pulock.Acquire(ctx, flock.WithTimeout(300*time.Second))
-	// if err != nil {
-	// 	return kubeletplugin.PrepareResult{
-	// 		Err: fmt.Errorf("error acquiring prep/unprep lock: %w", err),
-	// 	}
-	// }
-	// defer release()
+	release, err := d.pulock.Acquire(ctx, flock.WithTimeout(300*time.Second))
+	if err != nil {
+		return kubeletplugin.PrepareResult{
+			Err: fmt.Errorf("error acquiring prep/unprep lock: %w", err),
+		}
+	}
+	defer release()
 	klog.V(6).Infof("t_prep_lock_acq %.3f s", time.Since(t0).Seconds())
 
 	tprep0 := time.Now()

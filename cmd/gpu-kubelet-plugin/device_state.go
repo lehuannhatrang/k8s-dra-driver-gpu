@@ -172,14 +172,14 @@ func NewDeviceState(ctx context.Context, config *Config) (*DeviceState, error) {
 
 func (s *DeviceState) Prepare(ctx context.Context, claim *resourceapi.ResourceClaim) ([]kubeletplugin.Device, error) {
 	// tplock0 := time.Now()
-	// s.Lock()
-	// defer s.Unlock()
+	s.Lock()
+	defer s.Unlock()
 	// klog.V(6).Infof("t_prep_state_lock_acq %.3f s", time.Since(tplock0).Seconds())
 
 	claimUID := string(claim.UID)
 
 	tgcp0 := time.Now()
-	cp, err := s.getCheckpoint(ctx)
+	cp, err := s.getCheckpoint()
 	if err != nil {
 		return nil, fmt.Errorf("unable to get checkpoint: %v", err)
 	}
@@ -247,7 +247,9 @@ func (s *DeviceState) Prepare(ctx context.Context, claim *resourceapi.ResourceCl
 // thought through properly.
 func (s *DeviceState) DestroyUnknownMIGDevices(ctx context.Context) {
 	logpfx := "Destroy unknown MIG devices"
-	cp, err := s.getCheckpoint(ctx)
+	// Use recovery version during startup - if checkpoint is corrupted,
+	// it's safe to recreate it since we're just starting up
+	cp, err := s.getCheckpointWithRecovery(ctx)
 	if err != nil {
 		klog.Errorf("%s: unable to get checkpoint: %s", logpfx, err)
 		return
@@ -279,7 +281,7 @@ func (s *DeviceState) Unprepare(ctx context.Context, claimRef kubeletplugin.Name
 	defer s.Unlock()
 	klog.V(6).Infof("Unprepare() for claim '%s'", claimRef.String())
 
-	checkpoint, err := s.getCheckpoint(ctx)
+	checkpoint, err := s.getCheckpoint()
 	if err != nil {
 		return fmt.Errorf("unable to get checkpoint: %v", err)
 	}
@@ -355,20 +357,53 @@ func (s *DeviceState) createCheckpoint(ctx context.Context, cp *Checkpoint) erro
 	return err
 }
 
-func (s *DeviceState) getCheckpoint(ctx context.Context) (*Checkpoint, error) {
-	klog.V(6).Info("acquire cplock (get cp)")
+func (s *DeviceState) getCheckpoint() (*Checkpoint, error) {
+	// Acquire file lock to prevent reading during concurrent writes.
+	// This is critical for avoiding checkpoint corruption when multiple
+	// processes or calls access the checkpoint file simultaneously.
+	ctx := context.Background()
 	release, err := s.cplock.Acquire(ctx, flock.WithTimeout(10*time.Second))
 	if err != nil {
-		return nil, fmt.Errorf("error acquiring cplock: %w", err)
+		return nil, fmt.Errorf("error acquiring cplock for read: %w", err)
 	}
 	defer release()
-	klog.V(6).Info("acquired cplock")
 
 	checkpoint := &Checkpoint{}
 	if err := s.checkpointManager.GetCheckpoint(DriverPluginCheckpointFileBasename, checkpoint); err != nil {
 		return nil, err
 	}
 	klog.V(6).Info("cp read")
+	return checkpoint.ToLatestVersion(), nil
+}
+
+// getCheckpointWithRecovery attempts to get checkpoint and handles corruption by recreating it.
+// This is used during initialization or when we can safely recover from a corrupted checkpoint.
+func (s *DeviceState) getCheckpointWithRecovery(ctx context.Context) (*Checkpoint, error) {
+	release, err := s.cplock.Acquire(ctx, flock.WithTimeout(10*time.Second))
+	if err != nil {
+		return nil, fmt.Errorf("error acquiring cplock for read: %w", err)
+	}
+	defer release()
+
+	checkpoint := &Checkpoint{}
+	if err := s.checkpointManager.GetCheckpoint(DriverPluginCheckpointFileBasename, checkpoint); err != nil {
+		klog.Warningf("Checkpoint read failed: %v. Attempting recovery...", err)
+
+		// If checkpoint is corrupted, try to remove and recreate it.
+		// This is safe during initialization when no claims are actively being prepared.
+		if removeErr := s.checkpointManager.RemoveCheckpoint(DriverPluginCheckpointFileBasename); removeErr != nil {
+			klog.Warningf("Failed to remove corrupted checkpoint: %v", removeErr)
+		}
+
+		// Create a fresh checkpoint
+		freshCheckpoint := &Checkpoint{}
+		if createErr := s.checkpointManager.CreateCheckpoint(DriverPluginCheckpointFileBasename, freshCheckpoint); createErr != nil {
+			return nil, fmt.Errorf("failed to recreate checkpoint after corruption: %w", createErr)
+		}
+		klog.Infof("Successfully recreated checkpoint after corruption recovery")
+		return freshCheckpoint.ToLatestVersion(), nil
+	}
+	klog.V(6).Info("cp read with recovery option")
 	return checkpoint.ToLatestVersion(), nil
 }
 
@@ -389,9 +424,6 @@ func (s *DeviceState) updateCheckpoint(ctx context.Context, mutate func(*Checkpo
 	// get checkpoint w/o acquiring lock (we have it already)
 	checkpoint := &Checkpoint{}
 	if err := s.checkpointManager.GetCheckpoint(DriverPluginCheckpointFileBasename, checkpoint); err != nil {
-		return err
-	}
-	if err != nil {
 		return fmt.Errorf("unable to get checkpoint: %w", err)
 	}
 

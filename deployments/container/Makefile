@@ -15,9 +15,7 @@
 BUILD_MULTI_ARCH_IMAGES ?= no
 DOCKER ?= docker
 REGCTL ?= regctl
-BUILDX =
 PUSH_ON_BUILD ?= false
-ATTACH_ATTESTATIONS ?= false
 
 ##### Global variables #####
 include $(CURDIR)/versions.mk
@@ -38,9 +36,13 @@ IMAGE = $(IMAGE_NAME):$(IMAGE_TAG)
 ##### Public rules #####
 .PHONY: build
 
+# TODO: revisit compression=zstd,compression-level=15
 ifeq ($(BUILD_MULTI_ARCH_IMAGES),true)
 BUILDX = buildx
-DOCKER_BUILD_OPTIONS = --output=type=image,push=$(PUSH_ON_BUILD) --provenance=$(ATTACH_ATTESTATIONS) --sbom=$(ATTACH_ATTESTATIONS)
+DOCKER_BUILD_OPTIONS = \
+	--output=type=image,push=$(PUSH_ON_BUILD) \
+	--provenance=false \
+	--sbom=false
 DOCKER_BUILD_PLATFORM_OPTIONS = --platform=linux/amd64,linux/arm64
 else
 # We also support building single-platform images.
@@ -55,18 +57,48 @@ endif
 
 DOCKERFILE = $(CURDIR)/deployments/container/Dockerfile
 
-# Build the container image
+DOCKER_BUILD_CACHE_OPTIONS :=
+
+ifeq ($(CACHE_TO_GHCR), true)
+  DOCKER_BUILD_CACHE_OPTIONS +=	\
+	--cache-to type=registry,ref=ghcr.io/nvidia/k8s-dra-driver-gpu:buildcache,mode=max
+endif
+
+ifeq ($(CACHE_FROM_GHCR), true)
+  DOCKER_BUILD_CACHE_OPTIONS +=	\
+	--cache-from type=registry,ref=ghcr.io/nvidia/k8s-dra-driver-gpu:buildcache
+endif
+
+# Use mount cache (on host fs) for Go build&mod cache:
+# 1) Local dev: yes (store on host: get all benefits of the Go build cache).
+# 2) CI: no (cannot preserve it across builds; store it in container image layer
+#    instead for _only some_ of its benefits).
+#
+# Use the `CI` environment variable to distinguish both cases. Note that
+# `/mc/go/build-cache` `/mc/go/pkg/mod` are hard-coded locations in the
+# Dockerfile; backed by a mount cache (use those two locations in local dev,
+# don't use them in CI).
+GOCACHE = /mc/go/build-cache
+GOMODCACHE = /mc/go/pkg/mod
+ifeq ($(CI), true)
+	GOCACHE=/go/build-cache
+	GOMODCACHE=/go/pkg/mod
+endif
+
 build:
 	DOCKER_BUILDKIT=1 \
-		$(DOCKER) $(BUILDX) build --pull \
+		$(DOCKER) buildx build --pull \
 		$(DOCKER_BUILD_OPTIONS) \
 		$(DOCKER_BUILD_PLATFORM_OPTIONS) \
+		$(DOCKER_BUILD_CACHE_OPTIONS) \
 		--tag $(IMAGE) \
 		--build-arg GOLANG_VERSION="$(GOLANG_VERSION)" \
 		--build-arg BASH_STATIC_GIT_REF="$(BASH_STATIC_GIT_REF)" \
 		--build-arg TOOLKIT_CONTAINER_IMAGE="$(TOOLKIT_CONTAINER_IMAGE)" \
 		--build-arg VERSION="$(VERSION)" \
 		--build-arg GIT_COMMIT="$(GIT_COMMIT)" \
+		--build-arg GOCACHE="$(GOCACHE)" \
+		--build-arg GOMODCACHE="$(GOMODCACHE)" \
 		--progress=plain \
 		-f $(DOCKERFILE) \
 		$(CURDIR)

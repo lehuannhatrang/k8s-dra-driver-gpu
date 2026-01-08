@@ -26,8 +26,8 @@ nvidiaDriverRoot: /
 # If not specified, the default path inferred from the nvidia-container-toolkit library version will be used.
 nvidiaCDIHookPath: ""
 
-nameOverride: ""
-fullnameOverride: ""
+nameOverride: "nvidia-dra-driver-gpu"
+fullnameOverride: "nvidia-dra-driver-gpu"
 namespaceOverride: ""
 selectorLabelsOverride: {}
 gpuResourcesEnabledOverride: false
@@ -36,13 +36,13 @@ allowDefaultNamespace: false
 
 imagePullSecrets: []
 image:
-  repository: nvcr.io/nvidia/k8s-dra-driver-gpu
+  repository: docker.io/lehuannhatrang/k8s-dra-driver-gpu
   pullPolicy: IfNotPresent
   # Note: an empty string is translated to the `appVersion` string from
   # the Helm chart YAML (effectively implementing the default value to be
   # the current version). Also note that a "v" is prefixed to the
   # `appVersion` value.
-  tag: ""
+  tag: "25.8-dynamic-mig"
 
 serviceAccount:
   # Specifies whether a service account should be created

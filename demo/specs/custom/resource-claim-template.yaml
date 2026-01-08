@@ -1,0 +1,18 @@
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: dynamic-jupyter-mig-claim-template
+  namespace: test-jupyter-nb
+spec:
+  metadata:
+    labels:
+      app: dynamic-jupyter-dra
+  spec:
+    devices:
+      requests:
+        - name: mig-1g-24gb-0
+          exactly:
+            deviceClassName: mig.nvidia.com
+            selectors:
+            - cel:
+                expression: "device.attributes['gpu.nvidia.com'].profile == '1g.24gb'"

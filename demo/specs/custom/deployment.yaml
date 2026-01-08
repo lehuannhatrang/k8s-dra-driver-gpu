@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dynamic-jupyter-lab-dra
+  namespace: test-jupyter-nb
+  labels:
+    app: jupyter-dra
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jupyter-dra
+  template:
+    metadata:
+      labels:
+        app: jupyter-dra
+    spec:
+      runtimeClassName: nvidia-cdi
+      # DRA: Define the claim template here
+      resourceClaims:
+        - name: mig-gpu
+          resourceClaimTemplateName: dynamic-jupyter-mig-claim-template
+
+      containers:
+        - name: jupyter
+          # Use a CUDA-enabled image (base-notebook implies CPU-only)
+          #image: quay.io/jupyter/pytorch-notebook:cuda12-python-3.11
+          image: docker.io/lehuannhatrang/jupyter-pytorch:blackwell-nightly-cuda128 
+          # Security context often needed for hostPath write permissions
+          securityContext:
+            runAsUser: 0 
+            allowPrivilegeEscalation: true
+            
+          ports:
+            - containerPort: 8888
+          
+          # DRA: Mount the claim to the container
+          resources:
+            claims:
+              - name: mig-gpu
+                request: mig-1g-24gb-0
+          volumeMounts:
+            - name: notebook-data
+              mountPath: /home/jovyan/work
+
+          env:
+            - name: JUPYTER_ENABLE_LAB
+              value: "yes"
+            - name: GRANT_SUDO
+              value: "yes"
+      volumes:
+        - name: notebook-data
+          persistentVolumeClaim:
+            claimName: jupyter-data-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dynamic-jupyter-service
+  namespace: test-jupyter-nb
+spec:
+  type: NodePort  # Or LoadBalancer if supported
+  selector:
+    app: jupyter-dra
+  ports:
+    - port: 80
+      targetPort: 8888
+      nodePort: 30304
